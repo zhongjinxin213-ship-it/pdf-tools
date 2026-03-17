@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高级 PDF 转换工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+    <style>
+        :root { --primary: #6366f1; --primary-dark: #4f46e5; --danger: #ef4444; --bg: #f8fafc; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); padding: 2rem 1rem; margin: 0; display: flex; justify-content: center; }
+        .card { width: 100%; max-width: 900px; background: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
+        h1 { margin: 0 0 0.5rem 0; font-size: 1.5rem; text-align: center; }
+        .desc { color: #64748b; text-align: center; font-size: 0.875rem; margin-bottom: 2rem; }
+
+        /* 上传区域 */
+        #drop-zone {
+            border: 2px dashed #cbd5e1; border-radius: 0.75rem; padding: 3rem 1rem;
+            text-align: center; cursor: pointer; transition: 0.2s; background: #fff;
+        }
+        #drop-zone:hover, #drop-zone.hover { border-color: var(--primary); background: #f5f3ff; }
+
+        /* 预览排序区 */
+        #preview-grid { 
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); 
+            gap: 1rem; margin-top: 2rem; min-height: 100px;
+        }
+        .sortable-ghost { opacity: 0.4; border: 2px solid var(--primary); }
+        .item { 
+            position: relative; border-radius: 0.5rem; overflow: hidden; 
+            border: 1px solid #e2e8f0; background: #fff; cursor: grab;
+            transition: transform 0.2s;
+        }
+        .item:active { cursor: grabbing; }
+        .item img { width: 100%; height: 140px; object-fit: cover; pointer-events: none; }
+        .remove-btn {
+            position: absolute; top: 4px; right: 4px; background: rgba(239, 68, 68, 0.8);
+            color: white; border: none; border-radius: 4px; padding: 2px 6px; 
+            cursor: pointer; font-size: 10px; z-index: 10;
+        }
+        .remove-btn:hover { background: var(--danger); }
+
+        /* 控制区 */
+        .controls { 
+            margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid #f1f5f9;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;
+        }
+        .field { display: flex; flex-direction: column; gap: 0.5rem; }
+        .field label { font-size: 0.875rem; font-weight: 600; color: #475569; }
+        input { padding: 0.6rem; border: 1px solid #d1d5db; border-radius: 0.4rem; outline: none; }
+        input:focus { border-color: var(--primary); ring: 2px var(--primary); }
+
+        .btn {
+            grid-column: 1 / -1; background: var(--primary); color: white; border: none;
+            padding: 1rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;
+            font-size: 1rem; transition: 0.2s; margin-top: 1rem;
+        }
+        .btn:hover { background: var(--primary-dark); }
+        .btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+        #status { text-align: center; margin-top: 1rem; font-size: 0.875rem; color: var(--primary-dark); }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>智能 PDF 转换器</h1>
+    <p class="desc">拖拽图片调整顺序 | 自动压缩 < 1MB | 支持加密</p>
+
+    <div id="drop-zone">
+        <div style="font-size: 2.5rem;">📸</div>
+        <p>点击、拖拽或粘贴图片到此处</p>
+        <input type="file" id="file-input" multiple accept="image/*" style="display:none">
+    </div>
+
+    <div id="preview-grid"></div>
+
+    <div class="controls">
+        <div class="field">
+            <label>文件名</label>
+            <input type="text" id="filename" placeholder="我的文档">
+        </div>
+        <div class="field">
+            <label>文档密码 (可选)</label>
+            <input type="password" id="password" placeholder="设置后需密码打开">
+        </div>
+        <button id="convert-btn" class="btn" disabled>生成高清 PDF</button>
+    </div>
+    
+    <div id="status"></div>
+</div>
+
+<script>
+    const { jsPDF } = window.jspdf;
+    const previewGrid = document.getElementById('preview-grid');
+    const fileInput = document.getElementById('file-input');
+    const dropZone = document.getElementById('drop-zone');
+    const convertBtn = document.getElementById('convert-btn');
+    const status = document.getElementById('status');
+
+    // 初始化拖拽排序
+    const sortable = new Sortable(previewGrid, {
+        animation: 150,
+        ghostClass: 'sortable-ghost'
+    });
+
+    // 文件处理容器（存储 File 对象，键为预览图的 src）
+    let fileMap = new Map();
+
+    // 交互逻辑
+    dropZone.onclick = () => fileInput.click();
+    fileInput.onchange = (e) => handleFiles(e.target.files);
+    document.addEventListener('paste', (e) => {
+        const items = e.clipboardData.items;
+        for (let item of items) if (item.type.includes('image')) handleFiles([item.getAsFile()]);
+    });
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('hover'); };
+    dropZone.ondragleave = () => dropZone.classList.remove('hover');
+    dropZone.ondrop = (e) => { e.preventDefault(); dropZone.classList.remove('hover'); handleFiles(e.dataTransfer.files); };
+
+    function handleFiles(files) {
+        for (let file of files) {
+            if (!file.type.startsWith('image/')) continue;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const imgData = e.target.result;
+                const div = document.createElement('div');
+                div.className = 'item';
+                div.innerHTML = `
+                    <button class="remove-btn">删除</button>
+                    <img src="${imgData}">
+                `;
+                // 存储文件对象用于后续处理
+                div.dataset.id = Date.now() + Math.random();
+                fileMap.set(div.dataset.id, file);
+                
+                div.querySelector('.remove-btn').onclick = (event) => {
+                    event.stopPropagation();
+                    fileMap.delete(div.dataset.id);
+                    div.remove();
+                    checkBtn();
+                };
+                previewGrid.appendChild(div);
+                checkBtn();
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+
+    function checkBtn() {
+        convertBtn.disabled = previewGrid.children.length === 0;
+    }
+
+    // 转换逻辑
+    convertBtn.onclick = async () => {
+        const password = document.getElementById('password').value;
+        const name = document.getElementById('filename').value || 'download';
+        
+        convertBtn.disabled = true;
+        status.innerText = "正在分析图片并优化压缩...";
+
+        const pdf = new jsPDF({
+            encryption: password ? { userPassword: password, ownerPassword: password } : null
+        });
+
+        // 按预览区的当前顺序获取 DOM 元素
+        const items = Array.from(previewGrid.querySelectorAll('.item'));
+        
+        for (let i = 0; i < items.length; i++) {
+            const file = fileMap.get(items[i].dataset.id);
+            const compressedBase64 = await compressToTarget(file, 1024 * 1024); // 目标 1MB
+            
+            const props = pdf.getImageProperties(compressedBase64);
+            const pW = pdf.internal.pageSize.getWidth();
+            const pH = (props.height * pW) / props.width;
+
+            if (i > 0) pdf.addPage();
+            pdf.addImage(compressedBase64, 'JPEG', 0, 0, pW, pH, undefined, 'FAST');
+            status.innerText = `处理进度: ${Math.round(((i+1)/items.length)*100)}%`;
+        }
+
+        pdf.save(`${name}.pdf`);
+        status.innerText = "✨ 转换完成！";
+        convertBtn.disabled = false;
+    };
+
+    // 核心压缩函数
+    async function compressToTarget(file, targetSize) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (e) => {
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let w = img.width, h = img.height;
+                    // 默认最高分辨率限制
+                    const maxRes = 2800;
+                    if (w > maxRes || h > maxRes) {
+                        const s = Math.min(maxRes/w, maxRes/h);
+                        w *= s; h *= s;
+                    }
+                    canvas.width = w; canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+
+                    let q = 0.95;
+                    let out = canvas.toDataURL('image/jpeg', q);
+                    // 快速二分收敛
+                    while (atob(out.split(',')[1]).length > targetSize && q > 0.1) {
+                        q -= 0.15;
+                        out = canvas.toDataURL('image/jpeg', q);
+                    }
+                    resolve(out);
+                };
+            };
+        });
+    }
+</script>
+</body>
+</html>
